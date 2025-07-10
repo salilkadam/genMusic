@@ -7,11 +7,11 @@ This script downloads and caches the required models to avoid startup delays.
 import os
 import sys
 from pathlib import Path
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM, MusicgenForConditionalGeneration, AutoProcessor
 import torch
 
 # Set cache directory
-CACHE_DIR = os.environ.get('TRANSFORMERS_CACHE', '/Volumes/ssd/models')
+CACHE_DIR = os.environ.get('TRANSFORMERS_CACHE', '/models')
 os.environ['TRANSFORMERS_CACHE'] = CACHE_DIR
 os.environ['HF_HOME'] = CACHE_DIR
 
@@ -28,18 +28,39 @@ def download_musicgen_model():
         model_id = "facebook/musicgen-large"
         print(f"Downloading model: {model_id}")
         
-        # Initialize pipeline to download model
-        synthesiser = pipeline(
-            "text-to-audio", 
-            model=model_id, 
-            device=0 if device.type == 'cuda' else -1,
+        # Download model and processor separately to force safetensors
+        print("Downloading model files...")
+        model = MusicgenForConditionalGeneration.from_pretrained(
+            model_id,
+            cache_dir=CACHE_DIR,
+            use_safetensors=True,
+            torch_dtype=torch.float16 if device.type == 'cuda' else torch.float32
+        )
+        
+        processor = AutoProcessor.from_pretrained(
+            model_id,
             cache_dir=CACHE_DIR
+        )
+        
+        print("Model and processor downloaded successfully!")
+        
+        # Move to device
+        model = model.to(device)
+        
+        # Create pipeline for compatibility
+        synthesiser = pipeline(
+            "text-to-audio",
+            model=model,
+            tokenizer=processor,
+            device=0 if device.type == 'cuda' else -1
         )
         
         print(f"Model downloaded successfully and cached to: {CACHE_DIR}")
         
         # Clean up
         del synthesiser
+        del model
+        del processor
         if device.type == 'cuda':
             torch.cuda.empty_cache()
             
