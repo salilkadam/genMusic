@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # NVIDIA GPU version (not available on Apple Silicon Macs)
+  # music-generator:
+  #   build: .
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     # Mount models directory for caching
+  #     - /Volumes/ssd/models:/models
+  #     # Mount output directory for generated audio files
+  #     - ./output:/app/output
+  #   environment:
+  #     - TRANSFORMERS_CACHE=/models
+  #     - HF_HOME=/models
+  #     - TOKENIZERS_PARALLELISM=false
+  #     - CUDA_VISIBLE_DEVICES=0
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 60s
+
+  # Apple Silicon optimized version (recommended for Mac mini M2 Pro)
+  music-generator-apple-silicon:
+    build: 
+      context: .
+      dockerfile: Dockerfile.apple-silicon
+    ports:
+      - "8000:8000"
+    volumes:
+      - /Volumes/ssd/models:/models
+      - ./output:/app/output
+    environment:
+      - TRANSFORMERS_CACHE=/models
+      - HF_HOME=/models
+      - TOKENIZERS_PARALLELISM=false
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+      - OPENBLAS_NUM_THREADS=4
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # CPU-only version (alternative)
+  # music-generator-cpu:
+  #   build: 
+  #     context: .
+  #     dockerfile: Dockerfile.cpu
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - /Volumes/ssd/models:/models
+  #     - ./output:/app/output
+  #   environment:
+  #     - TRANSFORMERS_CACHE=/models
+  #     - HF_HOME=/models
+  #     - TOKENIZERS_PARALLELISM=false
+  #   restart: unless-stopped 

@@ -1,0 +1,122 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Audio files (but keep example outputs)
+*.wav
+*.mp3
+*.flac
+*.ogg
+!example_*.wav
+!demo_*.wav
+
+# Model cache (keep structure but not large files)
+models/
+/models/*
+!/models/.gitkeep
+
+# Generated output files
+output/
+/output/*
+!/output/.gitkeep
+
+# Configuration files with sensitive data
+.env
+.env.local
+.env.production
+.env.staging
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Docker volumes
+volumes/
+
+# Backup files
+*.bak
+*.tmp
+
+# System generated files
+.git/
+.svn/
+.hg/
+
+# Project specific
+deployment_config.json
+system_config.json
+
+# Keep important generated files
+!docker-compose.yml
+!docker-compose.*.yml
+!Dockerfile.*
+!*.md
+!*.py
+!*.sh
+!requirements.txt 

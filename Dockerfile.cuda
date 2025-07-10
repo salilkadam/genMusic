@@ -1,0 +1,69 @@
+FROM nvidia/cuda:11.8-devel-ubuntu22.04
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-dev \
+    git \
+    wget \
+    curl \
+    build-essential \
+    software-properties-common \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symlink for python
+RUN ln -s /usr/bin/python3 /usr/bin/python
+
+# Set working directory
+WORKDIR /app
+
+# Upgrade pip
+RUN pip install --upgrade pip
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install PyTorch with CUDA support
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# Install other requirements
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional GPU optimization packages
+RUN pip install --no-cache-dir \
+    nvidia-ml-py3 \
+    gputil
+
+# Create models directory
+RUN mkdir -p /models
+
+# Copy application code
+COPY music_optimized.py ./music.py
+COPY scripts/ ./scripts/
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app /models
+
+# Switch to non-root user
+USER appuser
+
+# Set CUDA environment variables
+ENV CUDA_VISIBLE_DEVICES=0
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the application
+CMD ["python", "music.py"] 

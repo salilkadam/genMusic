@@ -1,0 +1,55 @@
+FROM python:3.10-slim
+
+# Set platform for Intel/AMD x86_64
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Upgrade pip
+RUN pip install --upgrade pip
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install PyTorch for CPU (Intel optimized)
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install other requirements
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Create models directory
+RUN mkdir -p /models
+
+# Copy application code
+COPY music_optimized.py ./music.py
+COPY scripts/ ./scripts/
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app /models
+
+# Switch to non-root user
+USER appuser
+
+# Set environment variables for Intel optimization
+ENV OMP_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
+ENV NUMEXPR_NUM_THREADS=4
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the application
+CMD ["python", "music.py"] 

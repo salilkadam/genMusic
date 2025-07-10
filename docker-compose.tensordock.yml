@@ -1,0 +1,42 @@
+version: '3.8'
+services:
+  music-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/models              # Model cache on persistent storage
+      - ./output:/app/output          # Output directory
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - TRANSFORMERS_CACHE=/models
+      - HF_HOME=/models
+      - PYTHONUNBUFFERED=1
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+      - NUMEXPR_NUM_THREADS=4
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    mem_limit: 16g
+    memswap_limit: 16g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  default:
+    driver: bridge
