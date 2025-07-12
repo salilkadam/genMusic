@@ -107,11 +107,14 @@ def load_model_sync(model_name: str, device: str):
         if device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
         
+        # Force safetensors usage to avoid PyTorch security vulnerability
         synthesiser = pipeline(
             "text-to-audio",
             model=model_name,
             device=0 if device == "cuda" else -1,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32  # Use half precision for GPU
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,  # Use half precision for GPU
+            use_safetensors=True,  # Force safetensors to avoid CVE-2025-32434
+            low_cpu_mem_usage=True  # Reduce memory usage
         )
         
         # Move model to device with error handling
@@ -128,7 +131,33 @@ def load_model_sync(model_name: str, device: str):
         return synthesiser
     except Exception as e:
         logger.error(f"❌ Model loading failed: {e}")
-        raise e
+        # Try alternative loading method
+        try:
+            logger.info("🔄 Attempting alternative loading method...")
+            from transformers import MusicgenForConditionalGeneration, AutoProcessor
+            
+            # Load model and processor separately
+            model = MusicgenForConditionalGeneration.from_pretrained(
+                model_name,
+                use_safetensors=True,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32
+            )
+            processor = AutoProcessor.from_pretrained(model_name)
+            
+            # Create pipeline manually
+            synthesiser = pipeline(
+                "text-to-audio",
+                model=model,
+                tokenizer=processor,
+                device=0 if device == "cuda" else -1
+            )
+            
+            logger.info("✅ Model loaded with alternative method")
+            return synthesiser
+        except Exception as alt_error:
+            logger.error(f"❌ Alternative loading also failed: {alt_error}")
+            raise e
 
 def generate_audio_sync(synthesiser, prompt: str, duration: int, seed: int):
     """Synchronously generate audio - runs in thread pool."""

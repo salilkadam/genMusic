@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.5.1-cuda11.8-cudnn9-devel
+FROM pytorch/pytorch:2.6.0-cuda11.8-cudnn9-devel
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
