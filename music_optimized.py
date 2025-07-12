@@ -107,14 +107,12 @@ def load_model_sync(model_name: str, device: str):
         if device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        # Force safetensors usage to avoid PyTorch security vulnerability
+        # Load model with safetensors support
         synthesiser = pipeline(
             "text-to-audio",
             model=model_name,
             device=0 if device == "cuda" else -1,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,  # Use half precision for GPU
-            use_safetensors=True,  # Force safetensors to avoid CVE-2025-32434
-            low_cpu_mem_usage=True  # Reduce memory usage
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32  # Use half precision for GPU
         )
         
         # Move model to device with error handling
@@ -136,11 +134,10 @@ def load_model_sync(model_name: str, device: str):
             logger.info("🔄 Attempting alternative loading method...")
             from transformers import MusicgenForConditionalGeneration, AutoProcessor
             
-            # Load model and processor separately
+            # Load model and processor separately with safetensors
             model = MusicgenForConditionalGeneration.from_pretrained(
                 model_name,
                 use_safetensors=True,
-                low_cpu_mem_usage=True,
                 torch_dtype=torch.float16 if device == "cuda" else torch.float32
             )
             processor = AutoProcessor.from_pretrained(model_name)
@@ -169,12 +166,14 @@ def generate_audio_sync(synthesiser, prompt: str, duration: int, seed: int):
             # Clear CUDA cache before generation
             torch.cuda.empty_cache()
         
-        # Use more conservative parameters to avoid CUDA errors
+        # Use more conservative parameters to avoid CUDA errors and overflow
+        max_length = min(duration * 50, 1500)  # Cap max_length to prevent overflow
+        
         music = synthesiser(
             prompt,
             forward_params={
                 "do_sample": True,
-                "max_length": duration * 50,
+                "max_length": max_length,
                 "use_cache": False,  # Disable KV cache to reduce memory usage
                 "num_beams": 1,      # Use greedy decoding instead of beam search
                 "temperature": 1.0,  # Default temperature
@@ -194,7 +193,7 @@ def generate_audio_sync(synthesiser, prompt: str, duration: int, seed: int):
                 prompt,
                 forward_params={
                     "do_sample": True,
-                    "max_length": duration * 50,
+                    "max_length": max_length,
                     "use_cache": False
                 }
             )
