@@ -136,8 +136,8 @@ async def process_music_generation(task_id: str, request: MusicRequest):
         logger.info(f"🎵 Processing task {task_id}: '{request.prompt}' (duration: {request.duration}s, model: {request.model_size})")
         
         # Validate duration
-        if request.duration <= 0 or request.duration > 30:
-            raise ValueError("Duration must be between 1 and 30 seconds")
+        if request.duration <= 0 or request.duration > 120:
+            raise ValueError("Duration must be between 1 and 120 seconds")
         
         # Set device
         device = "cuda" if torch.cuda.is_available() else "cpu"
