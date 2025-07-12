@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.6.0-cuda11.8-cudnn9-devel
+FROM pytorch/pytorch:2.5.1-cuda11.8-cudnn9-devel
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -48,6 +48,8 @@ USER appuser
 ENV CUDA_VISIBLE_DEVICES=0
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV CUDA_LAUNCH_BLOCKING=1
+ENV TORCH_USE_CUDA_DSA=1
 
 # Expose port
 EXPOSE 8000

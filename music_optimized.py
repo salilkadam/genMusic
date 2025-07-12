@@ -100,28 +100,77 @@ def get_model_name(model_size: str) -> str:
 
 def load_model_sync(model_name: str, device: str):
     """Synchronously load the model - runs in thread pool."""
-    logger.info(f"📦 Loading {model_name}...")
-    synthesiser = pipeline(
-        "text-to-audio",
-        model=model_name,
-        device=0 if device == "cuda" else -1
-    )
-    return synthesiser
+    try:
+        logger.info(f"📦 Loading {model_name}...")
+        
+        # Clear CUDA cache before loading
+        if device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        synthesiser = pipeline(
+            "text-to-audio",
+            model=model_name,
+            device=0 if device == "cuda" else -1,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32  # Use half precision for GPU
+        )
+        
+        # Move model to device with error handling
+        if device == "cuda" and torch.cuda.is_available():
+            try:
+                synthesiser.model = synthesiser.model.to(device="cuda", dtype=torch.float16)
+                logger.info("✅ Model moved to CUDA with half precision")
+            except Exception as move_error:
+                logger.warning(f"⚠️ Failed to move model to CUDA: {move_error}")
+                # Fallback to CPU
+                synthesiser.model = synthesiser.model.to(device="cpu")
+                logger.info("✅ Model moved to CPU as fallback")
+        
+        return synthesiser
+    except Exception as e:
+        logger.error(f"❌ Model loading failed: {e}")
+        raise e
 
 def generate_audio_sync(synthesiser, prompt: str, duration: int, seed: int):
     """Synchronously generate audio - runs in thread pool."""
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    
-    music = synthesiser(
-        prompt,
-        forward_params={
-            "do_sample": True,
-            "max_length": duration * 50
-        }
-    )
-    return music
+    try:
+        # Set seeds
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+            # Clear CUDA cache before generation
+            torch.cuda.empty_cache()
+        
+        # Use more conservative parameters to avoid CUDA errors
+        music = synthesiser(
+            prompt,
+            forward_params={
+                "do_sample": True,
+                "max_length": duration * 50,
+                "use_cache": False,  # Disable KV cache to reduce memory usage
+                "num_beams": 1,      # Use greedy decoding instead of beam search
+                "temperature": 1.0,  # Default temperature
+                "top_k": 50,         # Limit top-k sampling
+                "top_p": 0.9         # Use nucleus sampling
+            }
+        )
+        return music
+    except RuntimeError as e:
+        if "device-side assert" in str(e):
+            logger.error(f"CUDA device-side assert error: {e}")
+            # Try with CPU fallback
+            logger.info("Attempting CPU fallback...")
+            synthesiser.device = torch.device("cpu")
+            torch.cuda.empty_cache()
+            return synthesiser(
+                prompt,
+                forward_params={
+                    "do_sample": True,
+                    "max_length": duration * 50,
+                    "use_cache": False
+                }
+            )
+        else:
+            raise e
 
 async def process_music_generation(task_id: str, request: MusicRequest):
     """Background task to process music generation."""
@@ -265,9 +314,14 @@ async def process_music_generation(task_id: str, request: MusicRequest):
         task.error_message = error_msg
         
     finally:
-        # Cleanup
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # Cleanup with better error handling
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("✅ CUDA cache cleared successfully")
+        except Exception as cleanup_error:
+            logger.warning(f"⚠️ CUDA cleanup failed: {cleanup_error}")
+            # Don't let cleanup errors affect the main task
 
 @app.post("/generate-music/", response_model=TaskResponse)
 async def generate_music(request: MusicRequest, background_tasks: BackgroundTasks):
