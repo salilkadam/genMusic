@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import uvicorn
 import os
 import scipy.io.wavfile
+import numpy as np
 import torch
 from transformers import pipeline
 import random
@@ -29,6 +30,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Music Generation API", description="Generate music using Facebook's MusicGen models")
+
+# Constants
+MAX_SINGLE_TRACK_DURATION = 30  # Maximum duration for a single track generation
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
@@ -61,6 +65,7 @@ class TaskInfo(BaseModel):
     generation_time: Optional[float] = None
     model_used: Optional[str] = None
     file_sizes_mb: Optional[List[float]] = None
+    segments_generated: Optional[int] = None
 
 class TaskResponse(BaseModel):
     task_id: str
@@ -78,6 +83,7 @@ class TaskStatusResponse(BaseModel):
     error_message: Optional[str] = None
     file_paths: Optional[Dict[str, str]] = None
     file_sizes_mb: Optional[List[float]] = None
+    segments_generated: Optional[int] = None
 
 # Global task storage (in production, use Redis or database)
 tasks: Dict[str, TaskInfo] = {}
@@ -97,6 +103,86 @@ def get_model_name(model_size: str) -> str:
         "large": "facebook/musicgen-large"
     }
     return model_map.get(model_size, "facebook/musicgen-small")
+
+def calculate_segments(duration: int) -> List[int]:
+    """Calculate how to split a duration into segments of max 30 seconds each."""
+    segments = []
+    remaining = duration
+    
+    while remaining > 0:
+        segment_duration = min(remaining, MAX_SINGLE_TRACK_DURATION)
+        segments.append(segment_duration)
+        remaining -= segment_duration
+    
+    return segments
+
+def combine_audio_segments(segments: List[Dict[str, Any]], target_duration: int) -> Dict[str, Any]:
+    """Combine multiple audio segments into a single track."""
+    if not segments:
+        raise ValueError("No segments to combine")
+    
+    # Get the sampling rate from the first segment
+    sampling_rate = segments[0]["sampling_rate"]
+    
+    # Log segment information for debugging
+    logger.info(f"🔗 Combining {len(segments)} audio segments...")
+    for i, segment in enumerate(segments):
+        audio_shape = segment["audio"].shape
+        audio_duration = len(segment["audio"]) / sampling_rate
+        logger.info(f"   Segment {i+1}: shape={audio_shape}, duration={audio_duration:.2f}s")
+    
+    # Handle different audio formats (mono, stereo, or 3D)
+    audio_arrays = []
+    for segment in segments:
+        audio = segment["audio"]
+        
+        # Handle different audio dimensions
+        if audio.ndim == 1:
+            # Mono audio - reshape to (samples, 1)
+            audio = audio.reshape(-1, 1)
+        elif audio.ndim == 2:
+            # Stereo audio - already in correct format (samples, channels)
+            pass
+        elif audio.ndim == 3:
+            # 3D audio - typically (batch, channels, samples) - reshape to (samples, channels)
+            if audio.shape[0] == 1:
+                # Remove batch dimension and transpose
+                audio = audio.squeeze(0).T  # (channels, samples) -> (samples, channels)
+            else:
+                raise ValueError(f"Unexpected 3D audio shape: {audio.shape}")
+        else:
+            raise ValueError(f"Unexpected audio shape: {audio.shape}")
+        
+        audio_arrays.append(audio)
+    
+    # Combine all audio data along the time axis (axis=0)
+    try:
+        combined_audio = np.concatenate(audio_arrays, axis=0)
+        logger.info(f"✅ Successfully combined audio segments. Final shape: {combined_audio.shape}")
+    except ValueError as e:
+        logger.error(f"❌ Error concatenating audio segments: {e}")
+        logger.error(f"   Audio shapes: {[arr.shape for arr in audio_arrays]}")
+        raise
+    
+    # Ensure the combined audio matches the target duration
+    target_samples = int(target_duration * sampling_rate)
+    
+    if combined_audio.shape[0] > target_samples:
+        # Trim to target duration
+        combined_audio = combined_audio[:target_samples, :]
+        logger.info(f"📏 Trimmed audio from {combined_audio.shape[0] / sampling_rate:.2f}s to {target_duration}s")
+    elif combined_audio.shape[0] < target_samples:
+        # Pad with silence to target duration
+        padding_samples = target_samples - combined_audio.shape[0]
+        padding_shape = (padding_samples, combined_audio.shape[1])
+        padding = np.zeros(padding_shape, dtype=combined_audio.dtype)
+        combined_audio = np.concatenate([combined_audio, padding], axis=0)
+        logger.info(f"🔇 Padded audio from {combined_audio.shape[0] / sampling_rate:.2f}s to {target_duration}s")
+    
+    return {
+        "audio": combined_audio,
+        "sampling_rate": sampling_rate
+    }
 
 def load_model_sync(model_name: str, device: str):
     """Synchronously load the model - runs in thread pool."""
@@ -247,45 +333,81 @@ async def process_music_generation(task_id: str, request: MusicRequest):
         
         task.progress = "Model ready, generating audio..."
         
+        # Calculate segments if duration > 30 seconds
+        if request.duration > MAX_SINGLE_TRACK_DURATION:
+            segments = calculate_segments(request.duration)
+            logger.info(f"📏 Splitting {request.duration}s into {len(segments)} segments: {segments}")
+            task.segments_generated = len(segments)
+        else:
+            segments = [request.duration]
+            task.segments_generated = 1
+        
         # Generate audio tracks
         logger.info(f"🎲 Setting up random seeds for generation")
         base_seed = random.randint(0, 2**32 - 1)
         logger.info(f"🔢 Using base seed: {base_seed}")
         
-        # Generate two tracks
         loop = asyncio.get_event_loop()
         
-        # Track 1
-        task.progress = "Generating first audio track..."
-        logger.info(f"🎵 Generating audio for: '{request.prompt}' (seed: {base_seed})")
+        # Generate two complete tracks (each potentially multi-segment)
+        track1_segments = []
+        track2_segments = []
         
-        track1_start = time.time()
+        # Track 1 - Generate all segments
+        task.progress = f"Generating first track ({len(segments)} segments)..."
+        logger.info(f"🎵 Generating first track with {len(segments)} segments")
+        
+        for i, segment_duration in enumerate(segments):
+            segment_progress = f"Generating first track segment {i+1}/{len(segments)} ({segment_duration}s)..."
+            task.progress = segment_progress
+            logger.info(f"🎵 {segment_progress}")
+            
+            segment_start = time.time()
+            try:
+                segment_audio = await asyncio.wait_for(
+                    loop.run_in_executor(executor, generate_audio_sync, synthesiser, request.prompt, segment_duration, base_seed + i),
+                    timeout=600  # 10 minute timeout for generation
+                )
+                track1_segments.append(segment_audio)
+                segment_time = time.time() - segment_start
+                logger.info(f"✅ First track segment {i+1} completed in {segment_time:.2f} seconds")
+            except asyncio.TimeoutError:
+                logger.error(f"❌ First track segment {i+1} generation timed out")
+                raise HTTPException(status_code=504, detail="Audio generation timed out")
+        
+        # Track 2 - Generate all segments
+        task.progress = f"Generating second track ({len(segments)} segments)..."
+        logger.info(f"🎵 Generating second track with {len(segments)} segments")
+        
+        for i, segment_duration in enumerate(segments):
+            segment_progress = f"Generating second track segment {i+1}/{len(segments)} ({segment_duration}s)..."
+            task.progress = segment_progress
+            logger.info(f"🎵 {segment_progress}")
+            
+            segment_start = time.time()
+            try:
+                segment_audio = await asyncio.wait_for(
+                    loop.run_in_executor(executor, generate_audio_sync, synthesiser, request.prompt, segment_duration, base_seed + 1000 + i),
+                    timeout=600  # 10 minute timeout for generation
+                )
+                track2_segments.append(segment_audio)
+                segment_time = time.time() - segment_start
+                logger.info(f"✅ Second track segment {i+1} completed in {segment_time:.2f} seconds")
+            except asyncio.TimeoutError:
+                logger.error(f"❌ Second track segment {i+1} generation timed out")
+                raise HTTPException(status_code=504, detail="Audio generation timed out")
+        
+        # Combine segments into full tracks
+        task.progress = "Combining audio segments..."
+        logger.info("🔗 Combining audio segments into full tracks...")
+        
         try:
-            music1 = await asyncio.wait_for(
-                loop.run_in_executor(executor, generate_audio_sync, synthesiser, request.prompt, request.duration, base_seed),
-                timeout=600  # 10 minute timeout for generation
-            )
-            track1_time = time.time() - track1_start
-            logger.info(f"✅ First track completed in {track1_time:.2f} seconds")
-        except asyncio.TimeoutError:
-            logger.error(f"❌ First track generation timed out")
-            raise HTTPException(status_code=504, detail="Audio generation timed out")
-        
-        # Track 2
-        task.progress = "Generating second audio track..."
-        logger.info(f"🎵 Generating audio for: '{request.prompt}' (seed: {base_seed + 1})")
-        
-        track2_start = time.time()
-        try:
-            music2 = await asyncio.wait_for(
-                loop.run_in_executor(executor, generate_audio_sync, synthesiser, request.prompt, request.duration, base_seed + 1),
-                timeout=600  # 10 minute timeout for generation
-            )
-            track2_time = time.time() - track2_start
-            logger.info(f"✅ Second track completed in {track2_time:.2f} seconds")
-        except asyncio.TimeoutError:
-            logger.error(f"❌ Second track generation timed out")
-            raise HTTPException(status_code=504, detail="Audio generation timed out")
+            music1 = combine_audio_segments(track1_segments, request.duration)
+            music2 = combine_audio_segments(track2_segments, request.duration)
+            logger.info("✅ Audio segments combined successfully")
+        except Exception as combine_error:
+            logger.error(f"❌ Error combining audio segments: {combine_error}")
+            raise HTTPException(status_code=500, detail="Error combining audio segments")
         
         # Save audio files
         task.progress = "Saving audio files..."
@@ -326,6 +448,7 @@ async def process_music_generation(task_id: str, request: MusicRequest):
         logger.info(f"🎉 Task {task_id} completed successfully!")
         logger.info(f"⏱️ Total time: {total_time:.2f} seconds")
         logger.info(f"📈 File sizes: {file_sizes}")
+        logger.info(f"🔢 Segments generated: {task.segments_generated}")
         
     except Exception as e:
         error_time = time.time() - request_start_time if 'request_start_time' in locals() else 0
@@ -402,7 +525,8 @@ async def get_task_status(task_id: str):
         generation_time=task.generation_time,
         error_message=task.error_message,
         file_paths=task.file_paths,
-        file_sizes_mb=task.file_sizes_mb
+        file_sizes_mb=task.file_sizes_mb,
+        segments_generated=task.segments_generated
     )
 
 @app.get("/task/{task_id}/download/{file_type}")
